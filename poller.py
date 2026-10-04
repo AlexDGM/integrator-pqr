@@ -3,7 +3,6 @@ import logging
 import os
 import time
 from datetime import datetime
-
 import psycopg
 import requests
 from dotenv import load_dotenv
@@ -22,7 +21,7 @@ load_dotenv()
 INTERVALO_SEGUNDOS = int(os.getenv("FRAPPE_POLL_INTERVAL", "60"))
 CAMPO_TIPO_SERVICIO = os.getenv("FRAPPE_OT_SERVICE_FIELD", "subject")
 CAMPO_DESCRIPCION = os.getenv("FRAPPE_OT_DESCRIPTION_FIELD", "description")
-CAMPO_DIRECCION = os.getenv("FRAPPE_OT_ADDRESS_FIELD", "address")
+CAMPO_DIRECCION = os.getenv("FRAPPE_OT_ADDRESS_FIELD", "").strip()
 TAMANO_PAGINA = 100
 ESTADO_SYNC = "HD Ticket"
 
@@ -31,6 +30,29 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def extraer_campo_formulario(texto, etiqueta):
+    if not isinstance(texto, str):
+        return None
+    for linea in texto.splitlines():
+        nombre, separador, valor = linea.partition(":")
+        if separador and nombre.strip().casefold() == etiqueta.casefold():
+            return valor.strip() or None
+    return None
+
+
+def extraer_descripcion_formulario(texto):
+    if not isinstance(texto, str):
+        return None
+    lineas = texto.splitlines()
+    for indice, linea in enumerate(lineas):
+        nombre, separador, valor = linea.partition(":")
+        if separador and nombre.strip().casefold() == "descripción":
+            contenido = [valor.strip()] if valor.strip() else []
+            contenido.extend(lineas[indice + 1 :])
+            return "\n".join(contenido).strip() or None
+    return texto.strip() or None
 
 
 def inicializar_estado():
@@ -91,11 +113,12 @@ def consultar_pagina(fecha_desde, inicio):
         "name",
         CAMPO_TIPO_SERVICIO,
         CAMPO_DESCRIPCION,
-        CAMPO_DIRECCION,
         "priority",
         "status",
         "modified",
     ]
+    if CAMPO_DIRECCION:
+        campos.append(CAMPO_DIRECCION)
     respuesta = requests.get(
         f"{FRAPPE_URL}/api/resource/HD%20Ticket",
         headers={
@@ -130,11 +153,18 @@ def sincronizar_cambios():
 
         ordenes = []
         for ticket in tickets:
+            descripcion_frappe = ticket.get(CAMPO_DESCRIPCION)
             datos_orden = {
                 "name": ticket.get("name"),
-                "tipo_servicio": ticket.get(CAMPO_TIPO_SERVICIO),
-                "descripcion": ticket.get(CAMPO_DESCRIPCION),
-                "direccion": ticket.get(CAMPO_DIRECCION),
+                "tipo_servicio": extraer_campo_formulario(
+                    descripcion_frappe, "Tipo de solicitud"
+                )
+                or ticket.get(CAMPO_TIPO_SERVICIO),
+                "descripcion": extraer_descripcion_formulario(descripcion_frappe),
+                "direccion": (
+                    ticket.get(CAMPO_DIRECCION) if CAMPO_DIRECCION else None
+                )
+                or extraer_campo_formulario(descripcion_frappe, "Dirección"),
                 "prioridad": ticket.get("priority", "MEDIA"),
                 "estado_frappe": ticket.get("status"),
             }
